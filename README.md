@@ -1,5 +1,5 @@
 # script
 
-Hi everyone,
+geo : this contains tile system module, which can return a set of nearby grids within the given radius. It also provide utilities for compute geographical distance between spatial points.
 
-This is Defu Lian. I am interested in spatio-temporal data mining and recommender system.
+seqlocrec: this contains some scripts for running PRME and fastFM
