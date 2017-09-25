@@ -60,42 +60,38 @@ def embed_list_tensor(input_seq, num_locations, embedding_size):
 
 
 
-# seq:  list of tensor, of size [batch], [time][batch][1]
-# labels: tensor, of size [batch]
-# seq_len: tensor of [batch], indicating length of each sequence
 
 
+# states : tensor of size [batch][time][att_size]
 def attention(query, states):
-    from keras.layers import Dense
     att_size = states.get_shape()[2].value
-    batch_size = tf.shape(states)[0]
-    if query is not None:
-        y = Dense(att_size, activation='linear',use_bias=False)(query)
-    else:
-        y = tf.constant(tf.zeros(batch_size, att_size))
-    hidden = Dense(att_size, activation='linear',use_bias=False)(states)
+    hidden = tf.layers.dense(states, att_size, use_bias=False)
     v = tf.Variable(tf.zeros([att_size]))
-    s = tf.reduce_sum(v * tf.tanh(hidden + tf.reshape(y, [-1, 1, att_size])), [2])
+    if query is not None:
+        y = tf.layers.dense(query, att_size, use_bias=False)
+        s = tf.reduce_sum(v * tf.tanh(hidden + tf.reshape(y, [-1, 1, att_size])), [2])
+    else:
+        s = tf.reduce_sum(v * tf.tanh(hidden), [2])
+
     s = tf.nn.softmax(s)
     return s ### batch x time
 
 
-
-def classifier_seq(seq, labels, num_loc, embed_size, seq_len, num_samples=-1, k=1):
-    T = len(seq)
-    seq_embed = embed_list_tensor(seq, num_loc, embed_size)
+# seq:  tensor, of size [batch][time]
+# labels: tensor, of size [batch]
+# seq_len: tensor of [batch], indicating length of each sequence
+def classifier_seq(seq, labels, weight_mask, num_loc, embed_size, seq_len, num_samples=-1, k=1):
+    seq_embed = embed_seq(seq, num_loc, embed_size)
     fw_cell = tf.contrib.rnn.LSTMCell(embed_size)
     bw_cell = tf.contrib.rnn.LSTMCell(embed_size)
-    seq_output, fw_state, bw_state = tf.nn.static_bidirectional_rnn(fw_cell, bw_cell, seq_embed, dtype=tf.float32, sequence_length=seq_len)
-    attention_state = [tf.reshape(e, [-1, 1, embed_size*2])for e in seq_output]
-    attention_state = tf.concat(attention_state, axis=1) # tensor of size batch x time x embed_size
+    attention_state, state = tf.nn.bidirectional_dynamic_rnn(fw_cell, bw_cell, seq_embed, dtype=tf.float32, sequence_length=seq_len, time_major=False)
+    attention_state = tf.concat(attention_state, -1)
     weight = attention(None, attention_state)
-    weight_mask = tf.cast(tf.sequence_mask(seq_len, T), dtype=tf.float32)
     weight *= weight_mask
     weight /= tf.reduce_sum(weight, [-1], keep_dims=True)
-    attention_out = tf.reduce_sum(attention_state * tf.reshape(weight, [-1, T, 1]), [1])
+    attention_out = tf.reduce_sum(attention_state * tf.expand_dims(weight, [-1]), [1])
 
-    W = tf.Variable(tf.zeros([embed_size, num_loc]))
+    W = tf.Variable(tf.zeros([embed_size*2, num_loc]))
     b = tf.Variable(tf.zeros(num_loc))
 
     if num_samples > 0:
