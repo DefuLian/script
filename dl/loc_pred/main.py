@@ -25,18 +25,23 @@ num_locations = 10
 embedding_size = 50
 hidden_units = embedding_size
 
-seq_input = tf.placeholder(tf.int32, shape=[None, None], name='input_seq')
-class_output = tf.placeholder(tf.int32, shape=[None], name='output_class')
-seq_len = tf.placeholder(tf.int32, shape=[None], name='sequence_length')
-weight_mask = tf.placeholder(tf.float32, shape=[None, None], name='weight_mask')
-loss, _ = classifier_seq(seq=seq_input, labels=class_output, weight_mask=weight_mask, num_loc=num_locations,embed_size=embedding_size, seq_len=seq_len)
+def main():
+    seq_input = tf.placeholder(tf.int32, shape=[None, None], name='input_seq')
+    class_output = tf.placeholder(tf.int32, shape=[None], name='output_class')
+    seq_len = tf.placeholder(tf.int32, shape=[None], name='sequence_length')
+    weight_mask = tf.placeholder(tf.float32, shape=[None, None], name='weight_mask')
+    loss, _ = classifier_seq(seq=seq_input, labels=class_output, weight_mask=weight_mask, num_loc=num_locations,
+                             embed_size=embedding_size, seq_len=seq_len)
 
+    with tf.Session() as sess:
+        seq, classes, seq_length, weight = get_next_batch(batch_size)
+        sess.run(tf.global_variables_initializer())
+        loss_value = sess.run(loss, feed_dict={seq_input: seq, class_output: classes, seq_len: seq_length,
+                                               weight_mask: weight})
+        print(loss_value)
 
-with tf.Session() as sess:
-    seq, classes, seq_length, weight = get_next_batch(batch_size)
-    sess.run(tf.global_variables_initializer())
-    loss_value = sess.run(loss, feed_dict={seq_input:seq, class_output:classes, seq_len:seq_length, weight_mask: weight})
-    print(loss_value)
+if __name__ == "__main__":
+    #processing('E:/data/gowalla/Gowalla_totalCheckins.txt')
 
 
 
