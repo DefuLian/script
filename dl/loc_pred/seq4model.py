@@ -93,18 +93,21 @@ def classifier_seq(seq, labels, weight_mask, num_loc, embed_size, seq_len, num_s
 
     W = tf.Variable(tf.zeros([embed_size*2, num_loc]))
     b = tf.Variable(tf.zeros(num_loc))
-
-    if num_samples > 0:
-        W_t = tf.transpose(W)
-        step_loss = tf.nn.sampled_softmax_loss(weights=W_t, biases=b,
-                                               labels=labels, inputs=attention_out,
-                                               num_sampled=num_samples, num_classes=num_loc)
-    else:
-        step_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels,
-                                                                   logits=attention_out)
-    loss = tf.reduce_sum(step_loss)
     logit = tf.matmul(attention_out, W) + b
     _, pred_k_loc = tf.nn.top_k(logit, k)
 
+    if num_samples > 0:
+        W_t = tf.transpose(W)
+        step_loss = tf.nn.nce_loss(weights=W_t, biases=b,
+                                               labels=tf.expand_dims(labels,axis=[-1]), inputs=attention_out,
+                                               num_sampled=num_samples, num_classes=num_loc)
+    else:
+        step_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels,
+                                                                   logits=logit)
+    loss = tf.reduce_sum(step_loss)
+
+
     return loss, pred_k_loc
+
+
 

@@ -1,4 +1,5 @@
 import tensorflow as tf
+
 def training():
     tf.reset_default_graph()
     weight_input = tf.placeholder(tf.int32, shape=(None,), name='example_weight')
