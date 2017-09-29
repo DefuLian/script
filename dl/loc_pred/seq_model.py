@@ -66,12 +66,12 @@ def main():
     import json
     filename = '/home/dlian/data/location_prediction/gowalla/Gowalla_totalCheckins.txt'
     loc_seq_index = processing(filename)
-    loc_seq_index = loc_seq_index[:2000]
+    loc_seq_index = loc_seq_index[:500]
     num_locations = max(l for (u, time_loc) in loc_seq_index for t,l in time_loc) + 1
     batch_size = 50
     max_seq_len = 10
-    epocs = 20
-    embedding_size = 100
+    epocs = 50
+    embedding_size = 200
 
     test = get_test(loc_seq_index, max_seq_len)
 
@@ -82,7 +82,7 @@ def main():
     loss, ndcg_op, acc_op = classifier_seq(seq=seq_input, labels=class_output, weight_mask=weight_mask, num_loc=num_locations,
                              embed_size=embedding_size, seq_len=seq_len, k=50, num_samples=-1)
 
-    train_op = tf.train.AdagradOptimizer(learning_rate=0.2).minimize(loss)
+    train_op = tf.train.AdagradOptimizer(learning_rate=0.1).minimize(loss)
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
         for iter in range(epocs):

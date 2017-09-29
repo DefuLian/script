@@ -99,7 +99,7 @@ def get_batch(loc_seq, batch_size, max_seq_len):
 
 def get_test_dataset(loc_seq_index):
     source = [np.array([l for t,l in time_loc[:-1]], np.int32).tostring() for _, time_loc in loc_seq_index]
-    target = [time_loc[-1][1] for uid, time_loc in loc_seq_index]
+    target = [[time_loc[-1][1]] for uid, time_loc in loc_seq_index]
     dataset = tf.contrib.data.Dataset.from_tensor_slices((source, target))
     def gen_ele(x, y):
         x = tf.decode_raw(tf.convert_to_tensor(x),tf.int32)

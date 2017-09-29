@@ -48,6 +48,6 @@ if __name__ == "__main__":
     #processing('E:/data/gowalla/Gowalla_totalCheckins.txt')
     filename = '/home/dlian/data/location_prediction/gowalla/Gowalla_totalCheckins.txt'
     loc_seq_index = processing(filename)
-    loc_seq_index = loc_seq_index[:2000]
+    loc_seq_index = loc_seq_index[:5000]
     ndcg,acc = markov_model(loc_seq_index)
     print(ndcg, acc)
