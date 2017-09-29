@@ -1,7 +1,7 @@
 def markov_model(seq_all_users):
     import numpy as np
-    from evaluation import computing_metric
-
+    from eval import computing_metric
+    from collections import Counter
     k = 50
     def suff_estimate(seq):
         dict = {}
@@ -19,7 +19,8 @@ def markov_model(seq_all_users):
     x = []
     for uid, user_seq in seq_all_users:
         seq = [l for (t,l) in user_seq[:-1]]
-        locations = list(set(seq))
+        #locations = list(set(seq))
+        cnt = Counter(seq)
         dict = suff_estimate(seq)
         prev = user_seq[-2][1]
         target = user_seq[-1][1]
@@ -28,10 +29,12 @@ def markov_model(seq_all_users):
             pred = sorted(dict[prev].items(), key=lambda v: -v[1])[:k]
             pred = [key for (key,val) in pred]
         else:
-            if k < len(locations):
-                pred = np.random.choice(locations, replace=False, size=[k])
-            else:
-                pred = np.random.permutation(locations)
+            pred = [loc for loc, count in cnt.most_common(k)]
+            #if k < len(locations):
+            #    pred = np.random.choice(locations, replace=False, size=[k])
+            #else:
+            #    pred = np.random.permutation(locations)
+
 
 
         x.append(pred)
@@ -41,10 +44,10 @@ def markov_model(seq_all_users):
     return ndcg, acc
 
 if __name__ == "__main__":
-    from test import processing
+    from data import processing
     #processing('E:/data/gowalla/Gowalla_totalCheckins.txt')
     filename = '/home/dlian/data/location_prediction/gowalla/Gowalla_totalCheckins.txt'
     loc_seq_index = processing(filename)
-    loc_seq_index = loc_seq_index[:10]
+    loc_seq_index = loc_seq_index[:2000]
     ndcg,acc = markov_model(loc_seq_index)
     print(ndcg, acc)
