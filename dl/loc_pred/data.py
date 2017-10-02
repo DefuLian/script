@@ -44,18 +44,25 @@ def processing(filename):
             loc_sequence_index.append(json.loads(line.strip()))
     else:
         loc_sequence = select_users(threshold=50)
-        user2ind = dict((u,ind) for (ind, (u, _)) in enumerate(loc_sequence))
-        locations, rare = select_locations(loc_sequence, threshold=10)
-        loc2index = dict((loc, index) for index, loc in enumerate(locations))
-        next_loc = len(loc2index)
+        #user2ind = dict((u,ind) for (ind, (u, _)) in enumerate(loc_sequence))
+        locations, rare = select_locations(loc_sequence, threshold=30)
+        loc2index = dict((loc, index + 1) for index, loc in enumerate(locations))
+        next_loc = len(locations) + 1
         for loc in rare:
             loc2index[loc] = next_loc
-
+        print('{0} total locations'.format(next_loc+1))
+        count = 0
         loc_sequence_index = []
         for (uid, time_loc) in loc_sequence:
+            count += 1
             seq = [(time, loc2index[loc]) for time, loc in time_loc]
-            loc_sequence_index.append((user2ind[uid], seq))
-
+            last = len(seq) - 1
+            while seq[last][1] == next_loc and last > -1:
+                last -= 1
+            seq = seq[:last+1]
+            if sum(e[1] != next_loc for e in seq) > 50:
+                loc_sequence_index.append((count, seq))
+        print('{0} total users'.format(len(loc_sequence_index)))
         with open(clean_index_file, 'w') as out_file:
             for (uid, time_loc) in loc_sequence_index:
                 out_file.write(json.dumps((uid, time_loc))+'\n')
@@ -151,10 +158,6 @@ if __name__ == "__main__":
     batch_size = 3
     max_seq_len = 5
 
-
-    with tf.Session() as sess:
-        for u in range(2):
-            X, Y = get_batch(loc_seq_index[u][1], batch_size, max_seq_len)
 
 
 

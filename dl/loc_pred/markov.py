@@ -3,9 +3,13 @@ def markov_model(seq_all_users):
     from eval import computing_metric
     from collections import Counter
     k = 50
+    rare_loc = max(l for u, time_loc in seq_all_users for (t,l) in time_loc)
     def suff_estimate(seq):
         dict = {}
         for (p,c) in zip(seq,seq[1:]):
+            if c == rare_loc:
+                continue
+
             if p in dict:
                 if c in dict[p]:
                     dict[p][c] += 1
@@ -48,6 +52,6 @@ if __name__ == "__main__":
     #processing('E:/data/gowalla/Gowalla_totalCheckins.txt')
     filename = '/home/dlian/data/location_prediction/gowalla/Gowalla_totalCheckins.txt'
     loc_seq_index = processing(filename)
-    loc_seq_index = loc_seq_index[:5000]
+    loc_seq_index = loc_seq_index[:1000]
     ndcg,acc = markov_model(loc_seq_index)
     print(ndcg, acc)

@@ -29,7 +29,7 @@ def generate_batch(data, batch_size, num_skips, skip_window):
       labels[i * num_skips + j, 0] = buffer[target]
     if data_index == len(data):
       #buffer[:] = data[:span]
-      buffer.extend(data[:span])
+
       data_index = span
     else:
       buffer.append(data[data_index])
@@ -87,7 +87,7 @@ def main():
     num_epocs = 4
     filename = '/home/dlian/data/location_prediction/gowalla/Gowalla_totalCheckins.txt'
     loc_seq_index = processing(filename)
-    data, vocabulary_size = gen_data(loc_seq_index)
+    data, vocabulary_size = gen_data(loc_seq_index[:1])
 
 
     train_inputs = tf.placeholder(tf.int32, shape=[batch_size])
