@@ -2,6 +2,7 @@ import numpy as np
 import os.path
 import json
 import tensorflow as tf
+import math
 def processing(filename):
     from itertools import groupby
     from collections import Counter
@@ -54,14 +55,21 @@ def processing(filename):
         count = 0
         loc_sequence_index = []
         for (uid, time_loc) in loc_sequence:
-            count += 1
             seq = [(time, loc2index[loc]) for time, loc in time_loc]
             last = len(seq) - 1
             while seq[last][1] == next_loc and last > -1:
                 last -= 1
             seq = seq[:last+1]
             if sum(e[1] != next_loc for e in seq) > 50:
-                loc_sequence_index.append((count, seq))
+                count += 1
+                final_seq = [(t,l) for t, l in seq if l != next_loc]
+                #first = seq[0]
+                #final_seq = [first]
+                #for pos in range(1,len(seq)):
+                    #if (seq[pos][1] != first[1]) or (seq[pos][0] != first[0] and seq[pos][1] != next_loc):
+                        #final_seq.append(seq[pos])
+                        #first = seq[pos]
+                loc_sequence_index.append((count, final_seq))
         print('{0} total users'.format(len(loc_sequence_index)))
         with open(clean_index_file, 'w') as out_file:
             for (uid, time_loc) in loc_sequence_index:

@@ -1,14 +1,14 @@
 import tensorflow as tf
-from data import processing
+from data import processing,get_test
 from data import sequence_mask
 from lang_model import embed_seq
 import numpy as np
 
 
-def prepare_batches(loc_seq_index, rare_loc, batch_size, max_seq_len, ratio):
+def prepare_batches(loc_seq_index, rare_loc, batch_size, max_seq_len):
     rowcol = []
     for row, (u, time_loc) in enumerate(loc_seq_index):
-        rowcol.extend([(row, col, min(col, max_seq_len)) for col, (t, l) in enumerate(time_loc[:int(ratio*len(time_loc))]) if l != rare_loc and col > 0])
+        rowcol.extend([(row, col, min(col, max_seq_len)) for col, (t, l) in enumerate(time_loc[:-1]) if l != rare_loc and col > 0])
     rowcol = sorted(rowcol, key=lambda e:(e[2],np.random.randn(1,1)))
     batches = []
     num_batches = (len(rowcol)+batch_size-1)/batch_size
@@ -63,18 +63,12 @@ def classifier_seq(seq, labels, weight_mask, num_loc, embed_size, seq_len, num_s
     weight *= weight_mask
     weight /= tf.reduce_sum(weight, [-1], keep_dims=True)
     attention_out = tf.reduce_sum(attention_state * tf.expand_dims(weight, [-1]), [1])
-    #attention_out = tf.concat([s.h for s in state], axis=1)
     W = tf.Variable(tf.zeros([embed_size*2, num_loc]))
                                 #stddev=1.0 / math.sqrt(embed_size))
     b = tf.Variable(tf.zeros(num_loc))
     logit = tf.matmul(attention_out, W) + b
     _, pred_k_loc = tf.nn.top_k(logit, k)
-    #compare = tf.cast(tf.equal(tf.expand_dims(labels,axis=[-1]), pred_k_loc), tf.float32)
-    #coefficient = tf.constant(1/np.log2(np.array(range(1,k+1), np.float32, ndmin=2)+1))
-    #compare *= coefficient
-    #ndcg = tf.reduce_mean(tf.reduce_sum(compare,axis=1))
     acc = tf.reduce_mean(tf.cast(tf.equal(pred_k_loc[:,0], labels), tf.float32))
-    #acc_1 = tf.reduce_mean(tf.cast(tf.equal(tf.argmax(logit, axis=1, output_type=tf.int32), labels), tf.float32))
     if num_samples > 0:
         W_t = tf.transpose(W)
         step_loss = tf.nn.nce_loss(weights=W_t, biases=b,
@@ -84,23 +78,12 @@ def classifier_seq(seq, labels, weight_mask, num_loc, embed_size, seq_len, num_s
         step_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels,
                                                                    logits=logit)
     loss = tf.reduce_sum(step_loss)
-
+    tf.summary.scalar('cross_entropy', loss)
+    tf.summary.scalar('accuracy', acc)
 
     return loss, acc, pred_k_loc
 
-def get_test(loc_seq_index, max_seq_len, ratio):
-    target = []
-    instances = []
-    seq_len = []
-    for (u, time_loc) in loc_seq_index:
-        for pos in range(int(len(time_loc)*ratio), len(time_loc)):
-            target.append(time_loc[pos][1])
-            instances.append([l for t,l in time_loc[max(pos-max_seq_len,0):pos]])
-            seq_len.append(len(instances[-1]))
 
-    weight = sequence_mask(seq_len, max(seq_len))
-
-    return instances, target, seq_len, weight
 
 def main():
     import os.path
@@ -110,15 +93,15 @@ def main():
     loc_seq_index = loc_seq_index[:1000]
     num_locations = max(l for (u, time_loc) in loc_seq_index for t,l in time_loc) + 1
     print('{0} locations, {1} users'.format(num_locations, len(loc_seq_index)))
-    batch_size = 32
+    batch_size = 64
     max_seq_len = 10
     epocs = 50
     embedding_size = 50
     learning_rate = 0.1
     print('embed_size:{0}, max sequence length:{1}, batch size:{2}, learn_rate:{3}'.format(embedding_size, max_seq_len, batch_size, learning_rate))
-    ratio = 0.8
-    test = get_test(loc_seq_index, max_seq_len, ratio)
-    batches = prepare_batches(loc_seq_index, num_locations-1, batch_size, max_seq_len, ratio)
+
+    test = get_test(loc_seq_index, max_seq_len)
+    batches = prepare_batches(loc_seq_index, -1, batch_size, max_seq_len)
 
     seq_input = tf.placeholder(tf.int32, shape=[None, None], name='input_seq')
     class_output = tf.placeholder(tf.int32, shape=[None], name='output_class')
@@ -127,32 +110,38 @@ def main():
     keep_prob = tf.placeholder(tf.float32)
     loss, acc_op, pred_top_op = classifier_seq(seq=seq_input, labels=class_output, weight_mask=weight_mask, num_loc=num_locations,
                              embed_size=embedding_size, seq_len=seq_len, k=50, num_samples=-1, keep_prob=keep_prob)
+    merged = tf.summary.merge_all()
 
     train_op = tf.train.AdagradOptimizer(learning_rate=learning_rate).minimize(loss)
     with tf.Session() as sess:
+        train_writer = tf.summary.FileWriter('/home/dlian/data/location_prediction/gowalla/train', sess.graph)
+        test_writer = tf.summary.FileWriter('/home/dlian/data/location_prediction/gowalla/test')
         sess.run(tf.global_variables_initializer())
         total_loss = 0
-        for iter in range(epocs):
+        for iter in range(3):
+            summary = None
             for batch_index in range(len(batches)):
                 batch = batches[batch_index]
                 X, Y, length, weight = get_batch(loc_seq_index, batch)
-                _, loss_value = sess.run([train_op,loss], feed_dict={seq_input: X, class_output: Y, seq_len: length,
+                _, loss_value, summary = sess.run([train_op,loss, merged], feed_dict={seq_input: X, class_output: Y, seq_len: length,
                                                   weight_mask: weight, keep_prob:0.5})
                 total_loss += loss_value
 
-
+            train_writer.add_summary(summary)
 
             X, Y, length, weight = test
-            acc, pred = sess.run([acc_op,pred_top_op], feed_dict={seq_input: X, class_output: Y, seq_len: length,
+            acc, pred, summary = sess.run([acc_op,pred_top_op, merged], feed_dict={seq_input: X, class_output: Y, seq_len: length,
                                                weight_mask: weight, keep_prob:1})
-
+            test_writer.add_summary(summary)
             print total_loss, acc
             total_loss = 0
 
-            #with open('/home/dlian/data/location_prediction/gowalla/pred{0}.txt'.format(iter), 'w') as fout:
-            #    for ii, (x, p, y) in enumerate(zip(X, pred[:,0], Y)):
-            #        if p != y:
-            #            fout.writelines('{3}, {0}, {1}, {2}\n'.format(y, p, x, ii))
+            with open('/home/dlian/data/location_prediction/gowalla/pred{0}.txt'.format(iter), 'w') as fout:
+                for ii, (x, p, y) in enumerate(zip(X, pred[:,0], Y)):
+                    if p != y:
+                        fout.writelines('{3}, {0}, {1}, {2}\n'.format(y, p, x, ii))
+        train_writer.close()
+        test_writer.close()
 
 
 
