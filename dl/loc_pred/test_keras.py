@@ -108,7 +108,7 @@ def main(train, test, num_loc, max_seq_len = 10):
     optimizer = Adagrad(lr=learning_rate)
     model = Model(inputs=loc_seq, outputs=loc_seq_softmax)
     model.compile(optimizer=optimizer, loss=sparse_categorical_crossentropy, metrics=[sparse_categorical_accuracy])
-    model.fit(x=list(x_train), y=list(y_train), batch_size=batch_size, epochs=max_epochs, validation_split=0.1, callbacks=[TestCallback(x_test, y_test)])
+    model.fit(x=list(x_train), y=list(y_train), batch_size=batch_size, epochs=max_epochs, validation_split=0.1, callbacks=[TestCallback(list(x_test), list(y_test))])
     score = model.evaluate(x=list(x_test), y=list(y_test), batch_size=batch_size*10)
     print(score)
 if __name__ == "__main__":
