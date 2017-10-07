@@ -69,14 +69,14 @@ def gen_data(loc_seq, max_seq_len):
                 x = x + [(0,0)]*(max_seq_len-len(x))
             _, x = zip(*x)
             _, y = visit[pos]
-            instances.append((list(x), y))
+            instances.append((uid, list(x), y))
     return instances
 
 
 
-def main(train, test, num_loc, max_seq_len = 10):
+def main(train, test, num_loc, num_user, max_seq_len = 10):
     from keras.models import Model
-    from keras.layers import Dense, Embedding, LSTM, Input
+    from keras.layers import Dense, Embedding, LSTM, Input, concatenate, Reshape, Dropout, BatchNormalization, Add
     from keras.optimizers import Adagrad
     from keras.losses import sparse_categorical_crossentropy
     from keras.metrics import sparse_categorical_accuracy
@@ -88,32 +88,83 @@ def main(train, test, num_loc, max_seq_len = 10):
             self.x = x
             self.y = y
         def on_epoch_end(self, epoch, logs=None):
-            loss, acc = self.model.evaluate(self.x, self.y, batch_size=1000, verbose=0)
-            print('\ntesting loss:{0}, acc:{1}\n'.format(loss, acc))
+            loss, acc = self.model.evaluate(x=self.x, y=self.y, batch_size=1000, verbose=0)
+            print('testing loss:{0}, acc:{1}\n'.format(loss, acc))
 
-    x_train, y_train = zip(*train)
-    x_test, y_test = zip(*test)
+    user_train, x_train, y_train = zip(*train)
+    user_train, x_train, y_train = np.array(list(user_train)), np.array(list(x_train)), np.array(list(y_train))
+    user_test, x_test, y_test = zip(*test)
+    user_test, x_test, y_test = np.array(list(user_test)), np.array(list(x_test)), np.array(list(y_test))
 
     embeding_size = 200
     hidden_units = 100
     learning_rate = 0.1
-    batch_size = 128
+    batch_size = 64
     max_epochs = 20
+    is_batch_norm = True
+    print embeding_size, hidden_units, is_batch_norm
+    user = Input(shape=(1,), dtype='int32', name='user_id')
+    user_embed = Embedding(output_dim=embeding_size, input_dim=num_user, input_length=1)(user)
+    user_embed = Reshape((embeding_size,))(user_embed)
+    user_embed = Dense(hidden_units, activation='tanh')(user_embed)
+    if is_batch_norm:
+        user_embed = BatchNormalization()(user_embed)
 
     loc_seq = Input(shape=(max_seq_len,), dtype='int32', name='loc_sequence')
     loc_seq_embed = Embedding(output_dim=embeding_size, input_dim=num_loc, mask_zero=True, input_length=max_seq_len)(loc_seq)
+    loc_seq_lstm = LSTM(hidden_units, dropout=0, recurrent_dropout=0, return_sequences=False)(loc_seq_embed)
+    if is_batch_norm:
+        loc_seq_lstm = BatchNormalization()(loc_seq_lstm)
 
-    loc_seq_lstm = LSTM(hidden_units, dropout=0.3, recurrent_dropout=0, return_sequences=False)(loc_seq_embed)
-    loc_seq_softmax = Dense(num_loc, activation='softmax')(loc_seq_lstm)
+    user_loc_seq_concate = concatenate([loc_seq_lstm, user_embed],axis=-1)
+    user_loc_seq_concate = Dropout(0.5)(user_loc_seq_concate)
+    user_loc_seq_concate = Dense(hidden_units, activation='relu')(user_loc_seq_concate)
+    if is_batch_norm:
+        user_loc_seq_concate = BatchNormalization()(user_loc_seq_concate)
+
+    #user_loc_seq_concate = Add()([loc_seq_lstm, user_loc_seq_concate, user_embed])
+
+    user_loc_seq_concate = Dropout(0.5)(user_loc_seq_concate)
+    loc_seq_softmax = Dense(num_loc, activation='softmax')(user_loc_seq_concate)
+
     optimizer = Adagrad(lr=learning_rate)
-    model = Model(inputs=loc_seq, outputs=loc_seq_softmax)
+    model = Model(inputs=[user, loc_seq], outputs=loc_seq_softmax)
     model.compile(optimizer=optimizer, loss=sparse_categorical_crossentropy, metrics=[sparse_categorical_accuracy])
-    model.fit(x=list(x_train), y=list(y_train), batch_size=batch_size, epochs=max_epochs, validation_split=0.1, callbacks=[TestCallback(list(x_test), list(y_test))])
-    score = model.evaluate(x=list(x_test), y=list(y_test), batch_size=batch_size*10)
+    model.fit(x=[user_train, x_train], y=y_train, batch_size=batch_size, epochs=max_epochs,
+              validation_split=0, callbacks=[TestCallback([user_test, x_test], y_test)])
+    score = model.evaluate(x=[user_test, x_test], y=y_test, batch_size=batch_size*10)
     print(score)
+
+def Data_Clean_Dove_Code(data):
+    # f = open('../Data/{0}_totalCheckins.txt'.format(dataset))
+    def num2weekhour(deltasec):
+        from datetime import datetime, timedelta
+        basetime = datetime(2006, 1, 1)
+        newtime=basetime+timedelta(seconds=deltasec)
+        weekid=newtime.weekday()
+        hournum=weekid*24+newtime.hour
+        return hournum
+    newdata = []
+    for eachuser in data:
+        m,n=data[eachuser].shape
+        tmpall=[]
+        tmpall.append(eachuser)
+        tmp = []
+        for i in range(m):
+            weekhour=num2weekhour(int(data[eachuser][i,1]))
+            tmp.append((weekhour, int(data[eachuser][i,-1])))
+        tmpall.append(tmp)
+        tmpall=tuple(tmpall)
+        newdata.append(tmpall)
+    return newdata
+
 if __name__ == "__main__":
     import numpy as np
-    loc_seq = processing('/home/dlian/data/location_prediction/gowalla/Gowalla_totalCheckins.txt')
+    import pickle
+    loc_seq = processing('/home/dove/data/Gowalla_totalCheckins.txt')
+    #loc_seq = processing('/home/dlian/data/location_prediction/gowalla/Gowalla_totalCheckins.txt')
+    #loc_seq = dict(loc_seq.items()[:2000])
+    #loc_seq = dict(Data_Clean_Dove_Code(pickle.load(open('/home/dlian/data/location_prediction/Gowalla_check_40_poi_40_filter','rb'))))
     max_seq_len = 10
     num_loc = max(l for u, time_loc in loc_seq.items() for t, l in time_loc) + 1
     print('{0} users, {1} locations'.format(len(loc_seq), num_loc))
@@ -121,4 +172,4 @@ if __name__ == "__main__":
     train_set = gen_data(train, max_seq_len)
     np.random.shuffle(train_set)
     test_set = gen_data(test, max_seq_len)
-    main(train_set, test_set, num_loc, max_seq_len)
+    main(train_set, test_set, num_loc, len(loc_seq), max_seq_len)
