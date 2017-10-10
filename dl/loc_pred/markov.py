@@ -54,9 +54,10 @@ if __name__ == "__main__":
     from test_keras import Data_Clean_Dove_Code
     import pickle
     #processing('E:/data/gowalla/Gowalla_totalCheckins.txt')
+    #filename = '/home/dove/data/Gowalla_totalCheckins.txt'
     filename = '/home/dlian/data/location_prediction/gowalla/Gowalla_totalCheckins.txt'
     loc_seq_index = processing(filename)
-    loc_seq_index = dict(loc_seq_index.items()[:2000])
+    #loc_seq_index = dict(loc_seq_index.items()[:2000])
     #loc_seq_index = dict(Data_Clean_Dove_Code(pickle.load(open('/home/dlian/data/location_prediction/Gowalla_check_40_poi_40_filter','rb'))))
     ndcg,acc = markov_model(loc_seq_index, 0.8)
     print(ndcg, acc)
