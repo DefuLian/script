@@ -76,12 +76,14 @@ def gen_data(loc_seq, max_seq_len):
 
 def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
     from keras.models import Model
-    from keras.layers import Dense, Embedding, LSTM, Input, Concatenate, Reshape, Dropout, BatchNormalization, Add
+    from keras.layers import Dense, Embedding, LSTM, Input, Concatenate, Reshape, Dropout, BatchNormalization, Add, Lambda
     from keras.optimizers import Adagrad
     from keras.losses import sparse_categorical_crossentropy
     from keras.metrics import sparse_categorical_accuracy
     from keras.callbacks import Callback, EarlyStopping
     from attention import Attention
+    import keras.backend as K
+    from keras.utils import plot_model
     class TestCallback(Callback):
         def __init__(self, x, y):
             super(TestCallback, self).__init__()
@@ -104,45 +106,56 @@ def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
     hidden_units = 100
     learning_rate = 0.1
     batch_size = 64
-    max_epochs = 50
+    max_epochs = 30
     batch_norm = True
-    dropout_rate = 0.5
+    time_dropout_rate = 0.4
+    loc_dropout_rate = 0.5
     time_pred_weight = 1
+    activation = 'relu'
 
-    print embeding_size, hidden_units, batch_norm, dropout_rate, time_pred_weight
+    print embeding_size, hidden_units, batch_norm, time_dropout_rate, loc_dropout_rate, time_pred_weight, activation
 
     user = Input(shape=(1,), dtype='int32', name='user_id')
     user_embed = Embedding(output_dim=embeding_size, input_dim=num_user, input_length=1)(user)
     user_embed = Reshape((embeding_size,))(user_embed)
-    user_embed = Dense(hidden_units, activation='tanh')(user_embed)
+    user_embed = Dense(hidden_units, activation=activation)(user_embed)
     if batch_norm:
         user_embed = BatchNormalization()(user_embed)
 
     time_seq = Input(shape=(max_seq_len,), dtype='int32', name='time_sequence')
-    time_seq_embed = Embedding(output_dim=embeding_size, input_dim=num_time, mask_zero=True, input_length=max_seq_len)(time_seq)
-    time_seq_lstm = LSTM(hidden_units, return_sequences=True)(time_seq_embed)
-    time_seq_lstm = Attention()([time_seq_lstm,user_embed])
+    time_embedding = Embedding(output_dim=embeding_size, input_dim=num_time, mask_zero=True)
+    time_seq_embed = time_embedding(time_seq)
+    time_seq_lstm = LSTM(hidden_units, return_sequences=False)(time_seq_embed)
+    if batch_norm:
+        time_seq_lstm = BatchNormalization()(time_seq_lstm)
 
     loc_seq = Input(shape=(max_seq_len,), dtype='int32', name='loc_sequence')
     loc_seq_embed = Embedding(output_dim=embeding_size, input_dim=num_loc, mask_zero=True, input_length=max_seq_len)(loc_seq)
-    loc_time_seq_embed = Concatenate(axis=-1)([loc_seq_embed,time_seq_embed])
+    loc_time_seq_embed = Concatenate(axis=-1)([loc_seq_embed, time_seq_embed])
     loc_time_seq_lstm = LSTM(hidden_units, return_sequences=False)(loc_time_seq_embed)
     if batch_norm:
         loc_time_seq_lstm = BatchNormalization()(loc_time_seq_lstm)
 
-    loc_pred_feat = Concatenate(axis=-1)([loc_time_seq_lstm, user_embed])
-    loc_pred_feat = Dropout(dropout_rate)(loc_pred_feat)
-    loc_pred_feat = Dense(hidden_units, activation='relu')(loc_pred_feat)
-    if batch_norm:
-        loc_pred_feat = BatchNormalization()(loc_pred_feat)
-    loc_pred_softmax = Dense(num_loc, activation='softmax', name='loc')(Dropout(dropout_rate)(loc_pred_feat))
-
-    time_pred_feat = Concatenate(axis=-1)([loc_pred_feat, time_seq_lstm])
-    time_pred_feat = Dense(hidden_units, activation='relu')(time_pred_feat)
+    time_pred_feat = Concatenate(axis=-1, name='time_pred_feat')([loc_time_seq_lstm, user_embed, time_seq_lstm])
+    time_pred_feat = Dropout(time_dropout_rate)(time_pred_feat)
+    time_pred_feat = Dense(hidden_units, activation=activation)(time_pred_feat)
     if batch_norm:
         time_pred_feat = BatchNormalization()(time_pred_feat)
 
-    time_pred_softmax = Dense(num_time, activation='softmax',name='time')(time_seq_lstm)
+    time_pred_softmax = Dense(num_time, activation='softmax', name='time')(Dropout(time_dropout_rate)(time_pred_feat))
+    pred_time_embed = Lambda(lambda inputs:time_embedding(K.argmax(inputs)), lambda shape: (shape[0], embeding_size), name='pred_time_embed')(time_pred_softmax)
+    pred_time_embed = Dense(hidden_units, activation=activation)(pred_time_embed)
+    if batch_norm:
+        pred_time_embed = BatchNormalization()(pred_time_embed)
+
+    loc_pred_feat = Concatenate(axis=-1, name='loc_pred_feat')([loc_time_seq_lstm, user_embed, pred_time_embed])
+    loc_pred_feat = Dropout(loc_dropout_rate)(loc_pred_feat)
+    loc_pred_feat = Dense(hidden_units, activation=activation)(loc_pred_feat)
+    if batch_norm:
+        loc_pred_feat = BatchNormalization()(loc_pred_feat)
+    loc_pred_softmax = Dense(num_loc, activation='softmax', name='loc')(Dropout(loc_dropout_rate)(loc_pred_feat))
+
+
 
     optimizer = Adagrad(lr=learning_rate)
     model = Model(inputs=[user, time_seq, loc_seq], outputs=[time_pred_softmax, loc_pred_softmax])
@@ -150,6 +163,7 @@ def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
                   metrics={'loc':sparse_categorical_accuracy,'time':sparse_categorical_accuracy})
     #earlyStopping = EarlyStopping(monitor='val_loss', patience=5, verbose=0, mode='min')
     model.metrics_names = ['loss', 'time_loss','loc_loss','time_acc','loc_acc']
+    plot_model(model, to_file='/home/dlian/model.png', show_shapes=True)
     model.fit(x=x_train, y=y_train, batch_size=batch_size, epochs=max_epochs, validation_data=(x_vali, y_vali)) #callbacks=[TestCallback(x_test, y_test)])
 
     score = model.evaluate(x=x_test, y=y_test, batch_size=batch_size*10)
