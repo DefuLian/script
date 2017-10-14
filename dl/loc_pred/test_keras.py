@@ -108,12 +108,13 @@ def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
     batch_size = 64
     max_epochs = 30
     batch_norm = True
-    time_dropout_rate = 0.4
+    time_dropout_rate = 0.5
     loc_dropout_rate = 0.5
     time_pred_weight = 1
     activation = 'relu'
+    att_method = None #'lba'#'lba' # 'ga' 'cba'
 
-    print embeding_size, hidden_units, batch_norm, time_dropout_rate, loc_dropout_rate, time_pred_weight, activation
+    print embeding_size, hidden_units, batch_norm, time_dropout_rate, loc_dropout_rate, time_pred_weight, activation, att_method
 
     user = Input(shape=(1,), dtype='int32', name='user_id')
     user_embed = Embedding(output_dim=embeding_size, input_dim=num_user, input_length=1)(user)
@@ -125,18 +126,21 @@ def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
     time_seq = Input(shape=(max_seq_len,), dtype='int32', name='time_sequence')
     time_embedding = Embedding(output_dim=embeding_size, input_dim=num_time, mask_zero=True)
     time_seq_embed = time_embedding(time_seq)
-    time_seq_lstm = LSTM(hidden_units, return_sequences=False)(time_seq_embed)
+    time_seq_lstm = Attention(att_method)([LSTM(hidden_units, return_sequences=True)(time_seq_embed), user_embed])
     if batch_norm:
         time_seq_lstm = BatchNormalization()(time_seq_lstm)
 
     loc_seq = Input(shape=(max_seq_len,), dtype='int32', name='loc_sequence')
     loc_seq_embed = Embedding(output_dim=embeding_size, input_dim=num_loc, mask_zero=True, input_length=max_seq_len)(loc_seq)
     loc_time_seq_embed = Concatenate(axis=-1)([loc_seq_embed, time_seq_embed])
-    loc_time_seq_lstm = LSTM(hidden_units, return_sequences=False)(loc_time_seq_embed)
-    if batch_norm:
-        loc_time_seq_lstm = BatchNormalization()(loc_time_seq_lstm)
 
-    time_pred_feat = Concatenate(axis=-1, name='time_pred_feat')([loc_time_seq_lstm, user_embed, time_seq_lstm])
+    loc_time_seq_lstm_seq = LSTM(hidden_units, return_sequences=True)(loc_time_seq_embed)
+    time_pred_feat = Attention(att_method)([loc_time_seq_lstm_seq, user_embed])
+
+    if batch_norm:
+        time_pred_feat = BatchNormalization()(time_pred_feat)
+
+    time_pred_feat = Concatenate(axis=-1, name='time_pred_feat')([time_pred_feat, user_embed, time_seq_lstm])
     time_pred_feat = Dropout(time_dropout_rate)(time_pred_feat)
     time_pred_feat = Dense(hidden_units, activation=activation)(time_pred_feat)
     if batch_norm:
@@ -148,7 +152,12 @@ def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
     if batch_norm:
         pred_time_embed = BatchNormalization()(pred_time_embed)
 
-    loc_pred_feat = Concatenate(axis=-1, name='loc_pred_feat')([loc_time_seq_lstm, user_embed, pred_time_embed])
+    user_time_embed = Concatenate(axis=-1)([user_embed, pred_time_embed])
+    loc_pred_feat = Attention(att_method)([loc_time_seq_lstm_seq, user_time_embed])
+    if batch_norm:
+        loc_pred_feat = BatchNormalization()(loc_pred_feat)
+
+    loc_pred_feat = Concatenate(axis=-1, name='loc_pred_feat')([loc_pred_feat, user_time_embed])
     loc_pred_feat = Dropout(loc_dropout_rate)(loc_pred_feat)
     loc_pred_feat = Dense(hidden_units, activation=activation)(loc_pred_feat)
     if batch_norm:

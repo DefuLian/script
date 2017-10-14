@@ -1,20 +1,26 @@
 from keras.layers import Layer
 import keras.backend as K
 class Attention(Layer):
-    def __init__(self, **kwargs): # [Batch][Dim1]
+    def __init__(self, method=None, **kwargs):
         self.supports_masking = True
+        if method != 'lba' and method !='ga' and method != 'cba' and method is not None:
+            raise ValueError('attention method is not supported')
+        self.method = method
         super(Attention, self).__init__(**kwargs)
 
     def build(self, input_shape):
         if isinstance(input_shape, list):
             self.att_size = input_shape[0][-1]
             self.query_dim = input_shape[1][-1]
-            self.Wq = self.add_weight(name='kernal_query_features', shape=(self.query_dim, self.att_size), initializer='glorot_normal', trainable=True)
+            if self.method == 'ga' or self.method == 'cba':
+                self.Wq = self.add_weight(name='kernal_query_features', shape=(self.query_dim, self.att_size), initializer='glorot_normal', trainable=True)
         else:
             self.att_size = input_shape[-1]
 
-        self.Wh = self.add_weight(name='kernal_hidden_features', shape=(self.att_size,self.att_size), initializer='glorot_normal', trainable=True)
-        self.v = self.add_weight(name='query_vector', shape=(self.att_size, 1), initializer='zeros', trainable=True)
+        if self.method == 'cba':
+            self.Wh = self.add_weight(name='kernal_hidden_features', shape=(self.att_size,self.att_size), initializer='glorot_normal', trainable=True)
+        if self.method == 'lba' or self.method == 'cba':
+            self.v = self.add_weight(name='query_vector', shape=(self.att_size, 1), initializer='zeros', trainable=True)
 
         super(Attention, self).build(input_shape)
 
@@ -27,7 +33,16 @@ class Attention(Layer):
         '''
         if isinstance(inputs, list) and len(inputs) == 2:
             memory, query = inputs
-            hidden = K.dot(memory, self.Wh) + K.expand_dims(K.dot(query, self.Wq), 1)
+            if self.method is None:
+                return memory[:,-1,:]
+            elif self.method == 'cba':
+                hidden = K.dot(memory, self.Wh) + K.expand_dims(K.dot(query, self.Wq), 1)
+                hidden = K.tanh(hidden)
+                s = K.squeeze(K.dot(hidden, self.v), -1)
+            elif self.method == 'ga':
+                s = K.sum(K.expand_dims(K.dot(query, self.Wq), 1) * memory, axis=-1)
+            else:
+                s = K.squeeze(K.dot(memory, self.v), -1)
             mask = mask[0]
         else:
             if isinstance(inputs, list):
@@ -36,14 +51,21 @@ class Attention(Layer):
                 memory = inputs[0]
             else:
                 memory = inputs
-            hidden = K.dot(memory, self.Wh)
+            if self.method is None:
+                return memory[:,-1,:]
+            elif self.method == 'cba':
+                hidden = K.dot(memory, self.Wh)
+                hidden = K.tanh(hidden)
+                s = K.squeeze(K.dot(hidden, self.v), -1)
+            elif self.method == 'ga':
+                raise ValueError('general attention needs the second input')
+            else:
+                s = K.squeeze(K.dot(memory, self.v), -1)
 
-        hidden = K.tanh(hidden)
-        s = K.softmax(K.squeeze(K.dot(hidden, self.v), -1))
+        s = K.softmax(s)
         if mask is not None:
             s *= K.cast(mask, dtype='float32')
-        sum_by_time = K.sum(s, axis=-1, keepdims=True)
-        s = s / (sum_by_time + K.epsilon())
+
         return K.sum(memory * K.expand_dims(s), axis=1)
 
     def compute_mask(self, inputs, mask=None):
@@ -57,3 +79,4 @@ class Attention(Layer):
             att_size = input_shape[-1]
             batch = input_shape[0]
         return (batch, att_size)
+
