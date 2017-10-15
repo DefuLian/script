@@ -66,7 +66,7 @@ def gen_data(loc_seq, max_seq_len):
         for pos in range(1, len(visit)):
             x = visit[max(pos-max_seq_len, 0):pos]
             if len(x) < max_seq_len:
-                x = x + [(0,0)]*(max_seq_len-len(x))
+                x = [(0,0)]*(max_seq_len-len(x)) + x
             x_t, x = zip(*x)
             y_t, y = visit[pos]
             instances.append((uid, list(x_t), list(x), y_t, y))
@@ -76,12 +76,12 @@ def gen_data(loc_seq, max_seq_len):
 
 def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
     from keras.models import Model
-    from keras.layers import Dense, Embedding, LSTM, Input, Concatenate, Reshape, Dropout, BatchNormalization, Add, Lambda
+    from keras.layers import Dense, Embedding, LSTM, Input, Concatenate, Reshape, Dropout, BatchNormalization, Add, Lambda, Bidirectional
     from keras.optimizers import Adagrad
     from keras.losses import sparse_categorical_crossentropy
     from keras.metrics import sparse_categorical_accuracy
     from keras.callbacks import Callback, EarlyStopping
-    from attention import Attention
+    from attention import Attention, SimpleAttention
     import keras.backend as K
     from keras.utils import plot_model
     class TestCallback(Callback):
@@ -112,7 +112,7 @@ def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
     loc_dropout_rate = 0.5
     time_pred_weight = 1
     activation = 'relu'
-    att_method = None #'lba'#'lba' # 'ga' 'cba'
+    att_method = 'cba' #'lba'#'lba' # 'ga' 'cba'
 
     print embeding_size, hidden_units, batch_norm, time_dropout_rate, loc_dropout_rate, time_pred_weight, activation, att_method
 
@@ -126,7 +126,9 @@ def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
     time_seq = Input(shape=(max_seq_len,), dtype='int32', name='time_sequence')
     time_embedding = Embedding(output_dim=embeding_size, input_dim=num_time, mask_zero=True)
     time_seq_embed = time_embedding(time_seq)
-    time_seq_lstm = Attention(att_method)([LSTM(hidden_units, return_sequences=True)(time_seq_embed), user_embed])
+    time_seq_lstm_seq = LSTM(hidden_units, return_sequences=True)(time_seq_embed)
+    #time_seq_lstm = Attention(att_method)([time_seq_lstm_seq, user_embed])
+    time_seq_lstm = SimpleAttention(att_method)(time_seq_lstm_seq)
     if batch_norm:
         time_seq_lstm = BatchNormalization()(time_seq_lstm)
 
@@ -135,7 +137,8 @@ def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
     loc_time_seq_embed = Concatenate(axis=-1)([loc_seq_embed, time_seq_embed])
 
     loc_time_seq_lstm_seq = LSTM(hidden_units, return_sequences=True)(loc_time_seq_embed)
-    time_pred_feat = Attention(att_method)([loc_time_seq_lstm_seq, user_embed])
+    #time_pred_feat = Attention(att_method)([loc_time_seq_lstm_seq, user_embed])
+    time_pred_feat = SimpleAttention(att_method)(loc_time_seq_lstm_seq)
 
     if batch_norm:
         time_pred_feat = BatchNormalization()(time_pred_feat)
@@ -153,7 +156,8 @@ def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
         pred_time_embed = BatchNormalization()(pred_time_embed)
 
     user_time_embed = Concatenate(axis=-1)([user_embed, pred_time_embed])
-    loc_pred_feat = Attention(att_method)([loc_time_seq_lstm_seq, user_time_embed])
+    #loc_pred_feat = Attention(att_method)([loc_time_seq_lstm_seq, user_time_embed])
+    loc_pred_feat = SimpleAttention(att_method)(loc_time_seq_lstm_seq)
     if batch_norm:
         loc_pred_feat = BatchNormalization()(loc_pred_feat)
 
