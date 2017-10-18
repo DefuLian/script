@@ -1,16 +1,4 @@
-def flat_gps_points(points):
-    def clip(v, min_v, max_v):
-        return min(max(v, min_v), max_v)
-    def flat_point(p):
-        import math
-        lat, lon = p
-        lat = clip(lat, -85.05112878, 85.05112878)
-        lon = clip(lon, -180, 180)
-        x = (lon + 180) / 360
-        sinLatitude = math.sin(lat * math.pi / 180)
-        y = 0.5 - math.log((1 + sinLatitude) / (1 - sinLatitude)) / (4 * math.pi)
-        return [x, y]
-    return [flat_point(p) for p in points]
+
 def processing(filename):
     import os.path
     import json
@@ -18,27 +6,7 @@ def processing(filename):
     from itertools import groupby
     from collections import Counter
     from datetime import datetime
-    from scipy.spatial import cKDTree
-    from sklearn.cluster import KMeans
-    from geopy.distance import vincenty
     time_format = '%Y-%m-%dT%H:%M:%SZ'
-    def getdb():
-        from itertools import groupby,islice
-        import numpy as np
-        import pickle
-        import os.path
-        dbfile = os.path.join(os.path.dirname(filename), 'locdb.dat')
-        if os.path.isfile(dbfile):
-            loc2latlon = pickle.load(open(dbfile, 'rb'))
-        else:
-            lines = (line.strip().split('\t') for line in open(filename))
-            data = set((loc, lat, lon) for u, t, lat, lon, loc in lines)
-            loc2latlon = {}
-            for key, group in groupby(sorted(data, key=lambda a:a[0]), key=lambda a:a[0]):
-                latlon = [[float(lat), float(lon)] for _, lat, lon in group]
-                loc2latlon[key] = np.mean(latlon, axis=0)
-            pickle.dump(loc2latlon, open(dbfile, 'wb'))
-        return loc2latlon
     def select_users(threshold):
         clean_file = os.path.join(os.path.dirname(filename), 'user_sequence.txt')
         if os.path.isfile(clean_file):
@@ -60,8 +28,9 @@ def processing(filename):
         uid_locid = ((uid, loc) for (uid, time_loc) in loc_sequence.items() for time, loc in time_loc)
         cnt = Counter(locid for uid, locid in uid_locid)
         locations = set(cnt.keys())
-        frequent = dict((locid, count) for locid, count in cnt.items() if count >= threshold)
-        return frequent
+        frequent = set(locid for locid, count in cnt.items() if count >= threshold)
+        rare = locations - frequent
+        return frequent, rare
 
 
     clean_index_file = os.path.join(os.path.dirname(filename), 'user_sequence_index')
@@ -71,37 +40,13 @@ def processing(filename):
         user_threshold = 40
         loc_threshold = 40
         loc_seq = select_users(threshold=user_threshold)
-        loc2count = select_locations(loc_seq, loc_threshold)
-        loc2index = dict(zip(loc2count.keys(), range(0, len(loc2count))))
+        locations, rare_loc = select_locations(loc_seq, loc_threshold)
+        loc2index = dict(zip(locations, range(1, len(locations) + 1)))
         sequence = {}
-        ind2loc = [None] * len(loc2count)
-        ind2count = [0] * len(loc2count)
-        for loc, ind in loc2index.items():
-            ind2loc[ind] = loc
-            ind2count[ind] = loc2count[loc]
-        locdb = getdb()
-        points = [locdb[loc] for loc in ind2loc]
-        points = flat_gps_points(points)
-        db = cKDTree(points)
-        def get_nearby_popular(location_index):
-            query = points[location_index]
-            _, index = db.query(query, k=20)
-            p = [ind2count[i] if i != location_index else 0 for i in index]
-            p_sum = sum(p)
-            p = [v/float(p_sum) for v in p]
-            index_new = np.random.choice(index, 3, replace=False, p=p)
-            return [i + 1 for i in index_new]
         for user_id, visit in loc_seq.items():
-            visit = [(t, l) for t, l in visit if l in loc2index]
-            if len(visit) <= user_threshold:
-                continue
-            all_points = flat_gps_points([locdb[l] for t, l in visit])
-            model = KMeans(n_clusters=2, random_state=0).fit(all_points)
-            labels_sorted = [label for label, _ in Counter(model.labels_).most_common(2)]
-            presentation = model.transform(all_points)
-            presentation = presentation[:,labels_sorted]
-            new_visit = [((t % 24 + 1), loc2index[l]+1, list(p), get_nearby_popular(loc2index[l])) for (t, l), p in zip(visit, presentation)]
-            sequence[int(user_id)] = new_visit
+            new_visit = [(t+1, loc2index[l]) for t, l in visit if l in loc2index]
+            if len(new_visit) > user_threshold:
+                sequence[int(user_id)] = new_visit
         pickle.dump(sequence, open(clean_index_file, 'wb'))
 
     return sequence
@@ -139,6 +84,7 @@ def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
     from attention import Attention, SimpleAttention
     import keras.backend as K
     from keras.utils import plot_model
+    #K.set_learning_phase(1)
     class TestCallback(Callback):
         def __init__(self, x, y):
             super(TestCallback, self).__init__()
@@ -149,20 +95,22 @@ def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
             print('\t')
             print(','.join(['{0}:{1}'.format(n,s) for n, s in zip(model.metrics_names, score)]))
     class AttentionCallback(Callback):
-        def __init__(self, x, y):
+        def __init__(self):
             super(AttentionCallback, self).__init__()
-            self.x = x
-            self.y = y
-
+            self.layer2weight = {}
+        def on_batch_end(self, batch, logs=None):
+            l2w = [(layer.name, layer.weight) for layer in self.model.layers if 'attention' in layer.name]
+            for name, weight in l2w:
+                w = np.mean(weight, axis=0)
+                if name in self.layer2weight:
+                    self.layer2weight[name].append(w)
+                else:
+                    self.layer2weight[name] = [w]
         def on_epoch_end(self, epoch, logs=None):
-            self.att_output = [layer.output[-1] for layer in self.model.layers if 'attention' in layer.name]
-            self.functor = K.function(self.model.input, self.att_output)
-            att = self.functor(self.x)
-            names = [layer.name for layer in self.model.layers if 'attention' in layer.name]
-            np.set_printoptions(precision=3)
-            print('\n')
-            for n, a in zip(names, att):
-                print(n +'\t'+ str(np.mean(a,axis=0)))
+            for name, weight_list in self.layer2weight:
+                weight = np.mean(weight_list, axis=0)
+                print('{}  {}\n'.format(name, '  '.join(['{:.3f}'.format(w) for w in weight])))
+            self.layer2weight.clear()
 
     xy_train = [np.array(list(e)) for e in zip(*train)]
     xy_vali = [np.array(list(e)) for e in zip(*vali)]
@@ -182,9 +130,9 @@ def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
     time_pred_weight = 1
     activation = 'relu'
     att_method = 'lba' #'lba'#'lba' # 'ga' 'cba'
+    attention = True
 
-
-    print embeding_size, hidden_units, batch_norm, time_dropout_rate, loc_dropout_rate, time_pred_weight, activation, att_method
+    print embeding_size, hidden_units, batch_norm, time_dropout_rate, loc_dropout_rate, time_pred_weight, activation, att_method, attention
 
     user = Input(shape=(1,), dtype='int32', name='user_id')
     user_embed = Embedding(output_dim=embeding_size, input_dim=num_user, input_length=1)(user)
@@ -196,9 +144,12 @@ def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
     time_seq = Input(shape=(max_seq_len,), dtype='int32', name='time_sequence')
     time_embedding = Embedding(output_dim=embeding_size, input_dim=num_time, mask_zero=True)
     time_seq_embed = time_embedding(time_seq)
-
-    time_seq_lstm_seq = LSTM(hidden_units, return_sequences=True)(time_seq_embed)
-    time_seq_lstm, _ = SimpleAttention(att_method)(time_seq_lstm_seq)
+    if not attention:
+        time_seq_lstm = Bidirectional(LSTM(hidden_units, return_sequences=False))(time_seq_embed)
+    else:
+        time_seq_lstm_seq = Bidirectional(LSTM(hidden_units, return_sequences=True))(time_seq_embed)
+        #time_seq_lstm = Attention(att_method)([time_seq_lstm_seq, user_embed])
+        time_seq_lstm = SimpleAttention(att_method)(time_seq_lstm_seq)
     if batch_norm:
         time_seq_lstm = BatchNormalization()(time_seq_lstm)
 
@@ -206,8 +157,12 @@ def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
     loc_seq_embed = Embedding(output_dim=embeding_size, input_dim=num_loc, mask_zero=True, input_length=max_seq_len)(loc_seq)
     loc_time_seq_embed = Concatenate(axis=-1)([loc_seq_embed, time_seq_embed])
 
-    loc_time_seq_lstm_seq = LSTM(hidden_units, return_sequences=True)(loc_time_seq_embed)
-    time_pred_feat, _ = SimpleAttention(att_method)(loc_time_seq_lstm_seq)
+    if not attention:
+        time_pred_feat = loc_pred_feat = Bidirectional(LSTM(hidden_units, return_sequences=False))(loc_time_seq_embed)
+    else:
+        loc_time_seq_lstm_seq = Bidirectional(LSTM(hidden_units, return_sequences=True))(loc_time_seq_embed)
+        #time_pred_feat = Attention(att_method)([loc_time_seq_lstm_seq, user_embed])
+        time_pred_feat = SimpleAttention(att_method)(loc_time_seq_lstm_seq)
 
     if batch_norm:
         time_pred_feat = BatchNormalization()(time_pred_feat)
@@ -226,7 +181,9 @@ def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
 
     user_time_embed = Concatenate(axis=-1)([user_embed, pred_time_embed])
 
-    loc_pred_feat, _ = SimpleAttention(att_method)(loc_time_seq_lstm_seq)
+    if attention:
+        #loc_pred_feat = Attention(att_method)([loc_time_seq_lstm_seq, user_time_embed])
+        loc_pred_feat = SimpleAttention(att_method)(loc_time_seq_lstm_seq)
 
     if batch_norm:
         loc_pred_feat = BatchNormalization()(loc_pred_feat)
@@ -248,7 +205,7 @@ def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
     tensorboard = TensorBoard('/home/dlian/data/location_prediction/gowalla/logs/', histogram_freq=1, embeddings_freq=1)
     model.metrics_names = ['loss', 'time_loss','loc_loss','time_acc','loc_acc']
     plot_model(model, to_file='/home/dlian/model.png', show_shapes=True)
-    model.fit(x=x_train, y=y_train, batch_size=batch_size, epochs=max_epochs, validation_data=(x_vali, y_vali), callbacks=[AttentionCallback(x_vali,y_vali)])
+    model.fit(x=x_train, y=y_train, batch_size=batch_size, epochs=max_epochs, validation_data=(x_vali, y_vali))#, callbacks=[AttentionCallback()])
 
     score = model.evaluate(x=x_test, y=y_test, batch_size=batch_size*10)
     print(score)
@@ -281,8 +238,7 @@ if __name__ == "__main__":
     import pickle
     #loc_seq = processing('/home/dove/data/Gowalla_totalCheckins.txt')
     loc_seq = processing('/home/dlian/data/location_prediction/gowalla/Gowalla_totalCheckins.txt')
-    exit()
-    loc_seq = dict(loc_seq.items()[:2000])
+    loc_seq = dict(loc_seq.items()[:100])
     #loc_seq = dict(Data_Clean_Dove_Code(pickle.load(open('/home/dlian/data/location_prediction/Gowalla_check_40_poi_40_filter','rb'))))
     max_seq_len = 10
     num_loc = max(l for u, time_loc in loc_seq.items() for t, l in time_loc) + 1

@@ -150,8 +150,7 @@ class SimpleAttention(Layer):
             s *= K.cast(mask, dtype='float32')
         sum_by_time = K.sum(s, axis=-1, keepdims=True)
         s = s / (sum_by_time + K.epsilon())
-        self.s = s
-        return K.concatenate([K.sum(memory * K.expand_dims(s), axis=1), last], axis=-1)
+        return [K.concatenate([K.sum(memory * K.expand_dims(s), axis=1), last], axis=-1), s]
 
     def compute_mask(self, inputs, mask=None):
         return None
@@ -159,9 +158,16 @@ class SimpleAttention(Layer):
     def compute_output_shape(self, input_shape):
         if isinstance(input_shape, list):
             att_size = input_shape[0][-1]
+            seq_len = input_shape[0][1]
             batch = input_shape[0][0]
         else:
             att_size = input_shape[-1]
+            seq_len = input_shape[1]
             batch = input_shape[0]
-        return (batch, att_size*2)
+        shape2 = (batch, seq_len, 1)
+        if self.method is not None:
+            shape1 = (batch, att_size*2)
+        else:
+            shape1 = (batch, att_size)
+        return [shape1, shape2]
 
