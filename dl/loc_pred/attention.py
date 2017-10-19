@@ -65,7 +65,8 @@ class Attention(Layer):
         s = K.softmax(s)
         if mask is not None:
             s *= K.cast(mask, dtype='float32')
-
+            sum_by_time = K.sum(s, axis=-1, keepdims=True)
+            s = s / (sum_by_time + K.epsilon())
         return K.sum(memory * K.expand_dims(s), axis=1)
 
     def compute_mask(self, inputs, mask=None):
@@ -126,9 +127,18 @@ class SimpleAttention(Layer):
                 mask = mask[0]
         else:
             memory = inputs
+
+        input_shape = K.int_shape(memory)
+        if len(input_shape) >3:
+            input_length = input_shape[1]
+            memory = K.reshape(memory, (-1,) + input_shape[2:])
+            if mask is not None:
+                mask = K.reshape(mask, (-1,) + input_shape[2:-1])
+            if query is not None:
+                raise ValueError('query can be not supported')
+
         last = memory[:,-1,:]
         memory = memory[:,:-1,:]
-        mask = mask[:,:-1]
         if query is None:
             query = last
         else:
@@ -147,13 +157,27 @@ class SimpleAttention(Layer):
 
         s = K.softmax(s)
         if mask is not None:
+            mask = mask[:,:-1]
             s *= K.cast(mask, dtype='float32')
-        sum_by_time = K.sum(s, axis=-1, keepdims=True)
-        s = s / (sum_by_time + K.epsilon())
-        return [K.concatenate([K.sum(memory * K.expand_dims(s), axis=1), last], axis=-1), s]
+            sum_by_time = K.sum(s, axis=-1, keepdims=True)
+            s = s / (sum_by_time + K.epsilon())
+        #return [K.concatenate([K.sum(memory * K.expand_dims(s), axis=1), last], axis=-1), s]
+        result = K.concatenate([K.sum(memory * K.expand_dims(s), axis=1), last], axis=-1)
+        if len(input_shape)>3:
+            output_shape = K.int_shape(result)
+            return K.reshape(result, (-1, input_shape[1], output_shape[-1]))
+        else:
+            return result
 
     def compute_mask(self, inputs, mask=None):
-        return None
+        if isinstance(inputs, list):
+            memory = inputs[0]
+        else:
+            memory = inputs
+        if len(K.int_shape(memory)) > 3 and mask is not None:
+            return K.all(mask, axis=-1)
+        else:
+            return None
 
     def compute_output_shape(self, input_shape):
         if isinstance(input_shape, list):
@@ -164,10 +188,19 @@ class SimpleAttention(Layer):
             att_size = input_shape[-1]
             seq_len = input_shape[1]
             batch = input_shape[0]
-        shape2 = (batch, seq_len, 1)
-        if self.method is not None:
-            shape1 = (batch, att_size*2)
+        #shape2 = (batch, seq_len, 1)
+        if len(input_shape)>3:
+            if self.method is not None:
+                shape1 = (batch, seq_len, att_size*2)
+            else:
+                shape1 = (batch, seq_len, att_size)
+            #return [shape1, shape2]
+            return shape1
         else:
-            shape1 = (batch, att_size)
-        return [shape1, shape2]
+            if self.method is not None:
+                shape1 = (batch, att_size*2)
+            else:
+                shape1 = (batch, att_size)
+            #return [shape1, shape2]
+            return shape1
 

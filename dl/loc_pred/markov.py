@@ -20,13 +20,13 @@ def markov_model(seq_all_users, ratio):
     x = []
     for uid, user_seq in seq_all_users.items():
         train_len = int(round(len(user_seq) * ratio))
-        seq_train = [l for (t,l) in user_seq[:train_len]]
+        seq_train = [l for (t,l,_,_) in user_seq[:train_len]]
         #locations = list(set(seq))
         cnt = Counter(seq_train)
         dictd = suff_estimate(seq_train)
 
         for pos in range(train_len, len(user_seq)):
-            t, l = user_seq[pos]
+            t, l, _,_ = user_seq[pos]
             y.append(l)
             prev = user_seq[pos-1][1]
             if prev in dictd:
@@ -57,7 +57,7 @@ if __name__ == "__main__":
     #filename = '/home/dove/data/Gowalla_totalCheckins.txt'
     filename = '/home/dlian/data/location_prediction/gowalla/Gowalla_totalCheckins.txt'
     loc_seq_index = processing(filename)
-    loc_seq_index = dict(loc_seq_index.items()[:2000])
+    loc_seq_index = dict(loc_seq_index.items()[:50])
     #loc_seq_index = dict(Data_Clean_Dove_Code(pickle.load(open('/home/dlian/data/location_prediction/Gowalla_check_40_poi_40_filter','rb'))))
     ndcg,acc = markov_model(loc_seq_index, 0.8)
     print(ndcg, acc)

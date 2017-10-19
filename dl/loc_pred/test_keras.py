@@ -100,7 +100,7 @@ def processing(filename):
             labels_sorted = [label for label, _ in Counter(model.labels_).most_common(2)]
             presentation = model.transform(all_points)
             presentation = presentation[:,labels_sorted]
-            new_visit = [((t % 24 + 1), loc2index[l]+1, list(p), get_nearby_popular(loc2index[l])) for (t, l), p in zip(visit, presentation)]
+            new_visit = [((t % 24 + 1), loc2index[l]+1, p, get_nearby_popular(loc2index[l])) for (t, l), p in zip(visit, presentation)]
             sequence[int(user_id)] = new_visit
         pickle.dump(sequence, open(clean_index_file, 'wb'))
 
@@ -116,22 +116,29 @@ def split(loc_seq, ratio):
     return train, test
 
 def gen_data(loc_seq, max_seq_len):
+    from collections import Counter
     instances = []
     for uid, visit in enumerate(loc_seq.values()):
-        for pos in range(1, len(visit)):
+        dd = Counter(l for _, l, _, _ in visit[:2])
+        for pos in range(2, len(visit)):
+            mc = [l for l, c in dd.most_common(2)]
+            if len(mc) < 2:
+                mc = [0] + mc
+            y_t, y, _, _ = visit[pos]
+            dd[y] += 1
             x = visit[max(pos-max_seq_len, 0):pos]
             if len(x) < max_seq_len:
-                x = [(0,0)]*(max_seq_len-len(x)) + x
-            x_t, x = zip(*x)
-            y_t, y = visit[pos]
-            instances.append((uid, list(x_t), list(x), y_t, y))
+                x = [(0, 0, [0.,0.], [0,0,0])]*(max_seq_len-len(x)) + x
+            x_t, x, x_p, x_n = zip(*x)
+            instances.append((uid, list(x_t), list(x), list(x_p), list(x_n), mc, y_t, y))
     return instances
 
 
 
 def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
     from keras.models import Model
-    from keras.layers import Dense, Embedding, LSTM, Input, Concatenate, Reshape, Dropout, BatchNormalization, Add, Lambda, Bidirectional
+    from keras.layers import Dense, Embedding, LSTM, Input, Concatenate, Reshape, Dropout, BatchNormalization
+    from keras.layers import Add, Lambda, Bidirectional, TimeDistributed, Activation
     from keras.optimizers import Adagrad
     from keras.losses import sparse_categorical_crossentropy
     from keras.metrics import sparse_categorical_accuracy
@@ -166,18 +173,18 @@ def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
 
     xy_train = [np.array(list(e)) for e in zip(*train)]
     xy_vali = [np.array(list(e)) for e in zip(*vali)]
-    xy_test = [np.array(e) for e in zip(*test)]
-    x_train, y_train = xy_train[:3], xy_train[3:]
-    x_vali, y_vali = xy_vali[:3], xy_vali[3:]
-    x_test, y_test = xy_test[:3], xy_test[3:]
+    xy_test = [np.array(list(e)) for e in zip(*test)]
+    x_train, y_train = xy_train[:6], xy_train[6:]
+    x_vali, y_vali = xy_vali[:6], xy_vali[6:]
+    x_test, y_test = xy_test[:6], xy_test[6:]
 
     embeding_size = 200
-    hidden_units = 100
+    hidden_units = embeding_size
     learning_rate = 0.1
     batch_size = 64
     max_epochs = 30
     batch_norm = True
-    time_dropout_rate = 0.5
+    time_dropout_rate = 0.8
     loc_dropout_rate = time_dropout_rate
     time_pred_weight = 1
     activation = 'relu'
@@ -189,66 +196,54 @@ def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
     user = Input(shape=(1,), dtype='int32', name='user_id')
     user_embed = Embedding(output_dim=embeding_size, input_dim=num_user, input_length=1)(user)
     user_embed = Reshape((embeding_size,))(user_embed)
-    user_embed = Dense(hidden_units, activation=activation)(user_embed)
-    if batch_norm:
-        user_embed = BatchNormalization()(user_embed)
+    user_embed = Activation(activation=activation)(user_embed)
 
     time_seq = Input(shape=(max_seq_len,), dtype='int32', name='time_sequence')
     time_embedding = Embedding(output_dim=embeding_size, input_dim=num_time, mask_zero=True)
     time_seq_embed = time_embedding(time_seq)
 
-    time_seq_lstm_seq = LSTM(hidden_units, return_sequences=True)(time_seq_embed)
-    time_seq_lstm, _ = SimpleAttention(att_method)(time_seq_lstm_seq)
-    if batch_norm:
-        time_seq_lstm = BatchNormalization()(time_seq_lstm)
+    loc_embedding = Embedding(output_dim=embeding_size, input_dim=num_loc)
+    most_freq = Input(shape=(2,), dtype='int32', name='most_freq')
+    most_freq_embed = loc_embedding(most_freq)
+    most_freq_embed = Reshape([embeding_size*2])(most_freq_embed)
 
     loc_seq = Input(shape=(max_seq_len,), dtype='int32', name='loc_sequence')
-    loc_seq_embed = Embedding(output_dim=embeding_size, input_dim=num_loc, mask_zero=True, input_length=max_seq_len)(loc_seq)
-    loc_time_seq_embed = Concatenate(axis=-1)([loc_seq_embed, time_seq_embed])
+    nearby_seq = Input(shape=(max_seq_len, 3), dtype='int32', name='nearby_sequence')
+    loc_nearby_seq = Concatenate(-1)([nearby_seq, Lambda(lambda inputs:K.expand_dims(inputs))(loc_seq)])
+    loc_nearby_seq_embed = loc_embedding(loc_nearby_seq)
+    loc_nearby_seq_embed = SimpleAttention('cba')(loc_nearby_seq_embed)
 
-    loc_time_seq_lstm_seq = LSTM(hidden_units, return_sequences=True)(loc_time_seq_embed)
-    time_pred_feat, _ = SimpleAttention(att_method)(loc_time_seq_lstm_seq)
+    spatial_seq = Input(shape=(max_seq_len, 2), dtype='float32', name='spatial_sequence')
+    spatial_seq_embed = Dense(embeding_size, use_bias=False, activation='relu')(spatial_seq)
 
-    if batch_norm:
-        time_pred_feat = BatchNormalization()(time_pred_feat)
+    spatial_temporal_embeding = Lambda(lambda inputs:K.concatenate(inputs,axis=-1), mask=lambda input, mask: mask[0],
+           output_shape=lambda shape:(shape[0][0],shape[0][1], sum(s[2] for s in shape)))([time_seq_embed, loc_nearby_seq_embed, spatial_seq_embed])
 
-    time_pred_feat = Concatenate(axis=-1, name='time_pred_feat')([time_pred_feat, user_embed, time_seq_lstm])
-    time_pred_feat = Dropout(time_dropout_rate)(time_pred_feat)
-    time_pred_feat = Dense(hidden_units, activation=activation)(time_pred_feat)
-    if batch_norm:
-        time_pred_feat = BatchNormalization()(time_pred_feat)
 
-    time_pred_softmax = Dense(num_time, activation='softmax', name='time')(Dropout(time_dropout_rate)(time_pred_feat))
+    spatial_temporal_lstm = LSTM(hidden_units, return_sequences=True)(spatial_temporal_embeding)
+    pred_feat = SimpleAttention()(spatial_temporal_lstm)
+
+    pred_feat = Concatenate(axis=-1, name='time_pred_feat')([pred_feat, user_embed, most_freq_embed])
+
+    time_pred_softmax = Dense(num_time, activation='softmax', name='time')(Dropout(time_dropout_rate)(pred_feat))
     pred_time_embed = Lambda(lambda inputs:time_embedding(K.argmax(inputs)), lambda shape: (shape[0], embeding_size), name='pred_time_embed')(time_pred_softmax)
-    pred_time_embed = Dense(hidden_units, activation=activation)(pred_time_embed)
-    if batch_norm:
-        pred_time_embed = BatchNormalization()(pred_time_embed)
+    pred_time_embed = Activation(activation=activation)(pred_time_embed)
 
-    user_time_embed = Concatenate(axis=-1)([user_embed, pred_time_embed])
 
-    loc_pred_feat, _ = SimpleAttention(att_method)(loc_time_seq_lstm_seq)
-
-    if batch_norm:
-        loc_pred_feat = BatchNormalization()(loc_pred_feat)
-
-    loc_pred_feat = Concatenate(axis=-1, name='loc_pred_feat')([loc_pred_feat, user_time_embed])
-    loc_pred_feat = Dropout(loc_dropout_rate)(loc_pred_feat)
-    loc_pred_feat = Dense(hidden_units, activation=activation)(loc_pred_feat)
-    if batch_norm:
-        loc_pred_feat = BatchNormalization()(loc_pred_feat)
+    loc_pred_feat = Concatenate(axis=-1, name='loc_pred_feat')([pred_time_embed, pred_feat])
     loc_pred_softmax = Dense(num_loc, activation='softmax', name='loc')(Dropout(loc_dropout_rate)(loc_pred_feat))
 
 
 
     optimizer = Adagrad(lr=learning_rate)
-    model = Model(inputs=[user, time_seq, loc_seq], outputs=[time_pred_softmax, loc_pred_softmax])
+    model = Model(inputs=[user, time_seq, loc_seq, spatial_seq, nearby_seq, most_freq], outputs=[time_pred_softmax, loc_pred_softmax])
     model.compile(optimizer=optimizer, loss=sparse_categorical_crossentropy, loss_weights=[time_pred_weight, 1],
                   metrics={'loc':sparse_categorical_accuracy,'time':sparse_categorical_accuracy})
     #earlyStopping = EarlyStopping(monitor='val_loss', patience=5, verbose=0, mode='min')
     tensorboard = TensorBoard('/home/dlian/data/location_prediction/gowalla/logs/', histogram_freq=1, embeddings_freq=1)
     model.metrics_names = ['loss', 'time_loss','loc_loss','time_acc','loc_acc']
     plot_model(model, to_file='/home/dlian/model.png', show_shapes=True)
-    model.fit(x=x_train, y=y_train, batch_size=batch_size, epochs=max_epochs, validation_data=(x_vali, y_vali), callbacks=[AttentionCallback(x_vali,y_vali)])
+    model.fit(x=x_train, y=y_train, batch_size=batch_size, epochs=max_epochs, validation_data=(x_vali, y_vali))#, callbacks=[AttentionCallback(x_vali,y_vali)])
 
     score = model.evaluate(x=x_test, y=y_test, batch_size=batch_size*10)
     print(score)
@@ -281,12 +276,11 @@ if __name__ == "__main__":
     import pickle
     #loc_seq = processing('/home/dove/data/Gowalla_totalCheckins.txt')
     loc_seq = processing('/home/dlian/data/location_prediction/gowalla/Gowalla_totalCheckins.txt')
-    exit()
     loc_seq = dict(loc_seq.items()[:2000])
     #loc_seq = dict(Data_Clean_Dove_Code(pickle.load(open('/home/dlian/data/location_prediction/Gowalla_check_40_poi_40_filter','rb'))))
     max_seq_len = 10
-    num_loc = max(l for u, time_loc in loc_seq.items() for t, l in time_loc) + 1
-    num_time = max(t for u, time_loc in loc_seq.items() for t, l in time_loc) + 1
+    num_loc = max(l for u, time_loc in loc_seq.items() for t, l, _, _ in time_loc) + 1
+    num_time = max(t for u, time_loc in loc_seq.items() for t, l, _, _ in time_loc) + 1
     print('{0} users, {1} locations, {2} time'.format(len(loc_seq), num_loc, num_time))
     train, test = split(loc_seq, 0.8)
     #train, vali = split(train, 0.9)
