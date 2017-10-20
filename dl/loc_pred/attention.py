@@ -145,7 +145,11 @@ class SimpleAttention(Layer):
             query = K.concatenate([query, last], axis=-1)
 
         if self.method is None:
-            return last
+            if len(input_shape) > 3:
+                output_shape = K.int_shape(last)
+                return K.reshape(last, (-1, input_shape[1], output_shape[-1]))
+            else:
+                return last
         elif self.method == 'cba':
             hidden = K.dot(memory, self.Wh) + K.expand_dims(K.dot(query, self.Wq), 1)
             hidden = K.tanh(hidden)

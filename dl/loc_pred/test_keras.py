@@ -91,16 +91,27 @@ def processing(filename):
             p = [v/float(p_sum) for v in p]
             index_new = np.random.choice(index, 3, replace=False, p=p)
             return [i + 1 for i in index_new]
+        def remove_duplicate(visit):
+            if len(visit) == 0:
+                return []
+            new_visit = [visit[0]]
+            for e in visit[1:]:
+                if e != new_visit[-1]:
+                    new_visit.append(e)
+            return new_visit
+
         for user_id, visit in loc_seq.items():
-            visit = [(t, l) for t, l in visit if l in loc2index]
+            visit = remove_duplicate([(t, l) for t, l in visit if l in loc2index])
             if len(visit) <= user_threshold:
                 continue
             all_points = flat_gps_points([locdb[l] for t, l in visit])
             model = KMeans(n_clusters=2, random_state=0).fit(all_points)
             labels_sorted = [label for label, _ in Counter(model.labels_).most_common(2)]
+            if len(labels_sorted) < 2:
+                continue
             presentation = model.transform(all_points)
             presentation = presentation[:,labels_sorted]
-            new_visit = [((t % 24 + 1), loc2index[l]+1, p, get_nearby_popular(loc2index[l])) for (t, l), p in zip(visit, presentation)]
+            new_visit = [((t % 24 + 1), loc2index[l]+1, p.tolist(), get_nearby_popular(loc2index[l])) for (t, l), p in zip(visit, presentation)]
             sequence[int(user_id)] = new_visit
         pickle.dump(sequence, open(clean_index_file, 'wb'))
 
@@ -130,7 +141,8 @@ def gen_data(loc_seq, max_seq_len):
             if len(x) < max_seq_len:
                 x = [(0, 0, [0.,0.], [0,0,0])]*(max_seq_len-len(x)) + x
             x_t, x, x_p, x_n = zip(*x)
-            instances.append((uid, list(x_t), list(x), list(x_p), list(x_n), mc, y_t, y))
+            x = [n + [e] for n, e in zip(x_n, x)]
+            instances.append((uid, list(x_t), list(x), list(x_p), mc, y_t, y))
     return instances
 
 
@@ -169,22 +181,22 @@ def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
             np.set_printoptions(precision=3)
             print('\n')
             for n, a in zip(names, att):
-                print(n +'\t'+ str(np.mean(a,axis=0)))
+                print(n +'\t'+ str(np.mean(a, axis=0)))
 
     xy_train = [np.array(list(e)) for e in zip(*train)]
     xy_vali = [np.array(list(e)) for e in zip(*vali)]
     xy_test = [np.array(list(e)) for e in zip(*test)]
-    x_train, y_train = xy_train[:6], xy_train[6:]
-    x_vali, y_vali = xy_vali[:6], xy_vali[6:]
-    x_test, y_test = xy_test[:6], xy_test[6:]
+    x_train, y_train = xy_train[:5], xy_train[5:]
+    x_vali, y_vali = xy_vali[:5], xy_vali[5:]
+    x_test, y_test = xy_test[:5], xy_test[5:]
 
-    embeding_size = 200
+    embeding_size = 50
     hidden_units = embeding_size
     learning_rate = 0.1
     batch_size = 64
     max_epochs = 30
     batch_norm = True
-    time_dropout_rate = 0.8
+    time_dropout_rate = 0.5
     loc_dropout_rate = time_dropout_rate
     time_pred_weight = 1
     activation = 'relu'
@@ -206,37 +218,40 @@ def main(train, vali, test, num_loc, num_user, num_time, max_seq_len = 10):
     most_freq = Input(shape=(2,), dtype='int32', name='most_freq')
     most_freq_embed = loc_embedding(most_freq)
     most_freq_embed = Reshape([embeding_size*2])(most_freq_embed)
+    most_freq_embed = Activation(activation=activation)(most_freq_embed)
 
-    loc_seq = Input(shape=(max_seq_len,), dtype='int32', name='loc_sequence')
-    nearby_seq = Input(shape=(max_seq_len, 3), dtype='int32', name='nearby_sequence')
-    loc_nearby_seq = Concatenate(-1)([nearby_seq, Lambda(lambda inputs:K.expand_dims(inputs))(loc_seq)])
+    loc_nearby_seq = Input(shape=(max_seq_len, 4), dtype='int32', name='loc_nearby_sequence')
     loc_nearby_seq_embed = loc_embedding(loc_nearby_seq)
-    loc_nearby_seq_embed = SimpleAttention('cba')(loc_nearby_seq_embed)
+    loc_nearby_seq_embed = SimpleAttention()(loc_nearby_seq_embed)
 
     spatial_seq = Input(shape=(max_seq_len, 2), dtype='float32', name='spatial_sequence')
     spatial_seq_embed = Dense(embeding_size, use_bias=False, activation='relu')(spatial_seq)
-
     spatial_temporal_embeding = Lambda(lambda inputs:K.concatenate(inputs,axis=-1), mask=lambda input, mask: mask[0],
-           output_shape=lambda shape:(shape[0][0],shape[0][1], sum(s[2] for s in shape)))([time_seq_embed, loc_nearby_seq_embed, spatial_seq_embed])
+           output_shape=lambda shape:(shape[0][0], shape[0][1], sum(s[2] for s in shape)))([time_seq_embed, loc_nearby_seq_embed])#, spatial_seq_embed])
 
-
-    spatial_temporal_lstm = LSTM(hidden_units, return_sequences=True)(spatial_temporal_embeding)
+    spatial_temporal_lstm = LSTM(K.int_shape(spatial_temporal_embeding)[-1], return_sequences=True)(spatial_temporal_embeding)
     pred_feat = SimpleAttention()(spatial_temporal_lstm)
+    pred_feat = Concatenate(axis=-1, name='pred_feat')([pred_feat, user_embed, most_freq_embed])
+    time_pred_feat = Dense(K.int_shape(pred_feat)[-1])(Dropout(time_dropout_rate)(pred_feat))
+    if batch_norm:
+        time_pred_feat = BatchNormalization()(time_pred_feat)
 
-    pred_feat = Concatenate(axis=-1, name='time_pred_feat')([pred_feat, user_embed, most_freq_embed])
-
-    time_pred_softmax = Dense(num_time, activation='softmax', name='time')(Dropout(time_dropout_rate)(pred_feat))
+    time_pred_softmax = Dense(num_time, activation='softmax', name='time')(Dropout(time_dropout_rate)(time_pred_feat))
     pred_time_embed = Lambda(lambda inputs:time_embedding(K.argmax(inputs)), lambda shape: (shape[0], embeding_size), name='pred_time_embed')(time_pred_softmax)
     pred_time_embed = Activation(activation=activation)(pred_time_embed)
 
 
     loc_pred_feat = Concatenate(axis=-1, name='loc_pred_feat')([pred_time_embed, pred_feat])
+    loc_pred_feat = Dense(K.int_shape(loc_pred_feat)[-1])(Dropout(loc_dropout_rate)(loc_pred_feat))
+    if batch_norm:
+        loc_pred_feat = BatchNormalization()(loc_pred_feat)
+
     loc_pred_softmax = Dense(num_loc, activation='softmax', name='loc')(Dropout(loc_dropout_rate)(loc_pred_feat))
 
 
 
     optimizer = Adagrad(lr=learning_rate)
-    model = Model(inputs=[user, time_seq, loc_seq, spatial_seq, nearby_seq, most_freq], outputs=[time_pred_softmax, loc_pred_softmax])
+    model = Model(inputs=[user, time_seq, loc_nearby_seq, spatial_seq, most_freq], outputs=[time_pred_softmax, loc_pred_softmax])
     model.compile(optimizer=optimizer, loss=sparse_categorical_crossentropy, loss_weights=[time_pred_weight, 1],
                   metrics={'loc':sparse_categorical_accuracy,'time':sparse_categorical_accuracy})
     #earlyStopping = EarlyStopping(monitor='val_loss', patience=5, verbose=0, mode='min')
